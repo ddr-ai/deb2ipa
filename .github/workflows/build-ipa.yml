@@ -1,0 +1,224 @@
+name: build-ipa
+
+# deb2ipa milestone M4 (see SKILL.md in the repo root).
+#
+# Two triggers, one pipeline:
+#   1. workflow_dispatch with a deb URL -> PUBLISHED Release carrying an
+#      unsigned .ipa. The user sideloads it themselves (AltStore,
+#      Sideloadly, or any signer). Unsigned by design; no TrollStore assumed.
+#   2. push to main touching the M4 scripts/workflow -> SMOKE run against
+#      a fixed default deb (NewTerm 3 from Chariz) producing a DRAFT release
+#      tagged smoke-<run number>, so the public release list stays clean.
+#      (No PAT is needed for this path; GITHUB_TOKEN cannot start runs, but
+#      a push can - SKILL.md lesson 7.N.)
+
+on:
+  workflow_dispatch:
+    inputs:
+      deb_url:
+        description: "Direct URL of the root .deb to convert"
+        required: true
+      package_name:
+        description: "Package id override (default: from the deb's control)"
+        required: false
+        default: ""
+      version:
+        description: "CFBundleShortVersionString override (default: deb Version)"
+        required: false
+        default: ""
+      bundle_id:
+        description: "CFBundleIdentifier override (default: sanitized)"
+        required: false
+        default: ""
+      display_name:
+        description: "CFBundleDisplayName override"
+        required: false
+        default: ""
+      repos:
+        description: "JSON array of APT repo base URLs for dependency resolution"
+        required: false
+        default: '["https://repo.chariz.com/", "https://apt.procurs.us/dists/iphoneos-arm64-rootless/1800/main/binary-iphoneos-arm64/"]'
+      extra_debs:
+        description: "Extra .deb URLs to merge in (newline-separated)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-ipa-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Smoke defaults (push runs have no inputs; dispatch inputs win).
+  SMOKE_DEB_URL: "https://repo.chariz.com/debs/ws.hbang.newterm3_3.0~beta1_iphoneos-arm64.deb"
+  DEFAULT_REPOS: '["https://repo.chariz.com/", "https://apt.procurs.us/dists/iphoneos-arm64-rootless/1800/main/binary-iphoneos-arm64/"]'
+
+jobs:
+  build:
+    name: Resolve, assemble, verify, release
+    runs-on: ubuntu-24.04   # pinned: ubuntu-latest is broken Ubuntu 26 (SKILL.md 7.L)
+    timeout-minutes: 30
+    env:
+      WORKDIR: ${{ github.workspace }}/work
+      DEB_URL: ${{ github.event.inputs.deb_url || env.SMOKE_DEB_URL }}
+      PACKAGE_NAME: ${{ github.event.inputs.package_name || '' }}
+      VERSION_IN: ${{ github.event.inputs.version || '' }}
+      BUNDLE_ID: ${{ github.event.inputs.bundle_id || '' }}
+      DISPLAY_NAME: ${{ github.event_name == 'push' && 'NewTerm 3' || github.event.inputs.display_name }}
+      REPOS: ${{ github.event.inputs.repos || env.DEFAULT_REPOS }}
+      EXTRA_DEBS: ${{ github.event.inputs.extra_debs || '' }}
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install assembler dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zip unzip xz-utils file
+
+      - name: Download debs
+        run: |
+          set -euo pipefail
+          mkdir -p "$WORKDIR/debs"
+          curl -fL --retry 3 --retry-delay 2 -o "$WORKDIR/debs/main.deb" "$DEB_URL"
+          file "$WORKDIR/debs/main.deb"
+          n=0
+          if [ -n "$EXTRA_DEBS" ]; then
+            while IFS= read -r url; do
+              [ -z "$url" ] && continue
+              n=$((n+1))
+              curl -fL --retry 3 --retry-delay 2 -o "$WORKDIR/debs/extra-$n.deb" "$url"
+            done <<EOF
+          $EXTRA_DEBS
+          EOF
+          fi
+          python3 - "$WORKDIR" > "$WORKDIR/extra-debs.json" <<'EOF'
+          import glob, json, sys
+          print(json.dumps(sorted(glob.glob(sys.argv[1] + "/debs/extra-*.deb"))))
+          EOF
+
+      - name: Resolve dependencies (dpkg-style closure)
+        run: |
+          set -euo pipefail
+          python3 scripts/resolve_deps.py \
+            --deb "$WORKDIR/debs/main.deb" \
+            --workdir "$WORKDIR" \
+            --repos "$REPOS" \
+            --extra-debs "$(cat "$WORKDIR/extra-debs.json")"
+
+      - name: Assemble unsigned IPA
+        id: assemble
+        run: |
+          set -euo pipefail
+          PKG="$(dpkg-deb -f "$WORKDIR/debs/main.deb" Package)"
+          VER="$(dpkg-deb -f "$WORKDIR/debs/main.deb" Version)"
+          [ -n "$PACKAGE_NAME" ] && PKG="$PACKAGE_NAME"
+          [ -n "$VERSION_IN" ] && VER="$VERSION_IN"
+          bash scripts/make_ipa.sh \
+            --debs-dir "$WORKDIR/debs" \
+            --workdir "$WORKDIR" \
+            --bundle-id "$BUNDLE_ID" \
+            --display-name "$DISPLAY_NAME" \
+            --version "${VER:-1.0}" \
+            | tee "$WORKDIR/build.log"
+          # make_ipa's stdout carries machine lines; parse them from the log
+          # (pipefail above has already failed the step if it exited non-zero).
+          IPA_PATH="$(sed -n 's/^IPA_PATH=//p' "$WORKDIR/build.log")"
+          BUNDLE="$(sed -n 's/^BUNDLE=//p' "$WORKDIR/build.log")"
+          EXECUTABLE="$(sed -n 's/^EXECUTABLE=//p' "$WORKDIR/build.log")"
+          [ -n "$IPA_PATH" ] && [ -n "$BUNDLE" ] || { echo "no IPA_PATH/BUNDLE in make_ipa output"; exit 1; }
+          {
+            echo "ipa_path=$IPA_PATH"
+            echo "bundle=$BUNDLE"
+            echo "executable=$EXECUTABLE"
+            echo "package=$PKG"
+            echo "version=$VER"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "## deb2ipa build"
+            echo ""
+            echo "- Package: \`$PKG $VER\`"
+            echo "- Bundle: \`$BUNDLE\` (executable: \`$EXECUTABLE\`)"
+            echo "- IPA: \`$(basename "$IPA_PATH")\` ($(du -h "$IPA_PATH" | cut -f1))"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Verify IPA structure
+        run: |
+          set -euo pipefail
+          ipa="${{ steps.assemble.outputs.ipa_path }}"
+          bundle="${{ steps.assemble.outputs.bundle }}"
+          [ -f "$ipa" ] || { echo "IPA missing: $ipa"; exit 1; }
+          unzip -Z1 "$ipa" > /tmp/ipa-listing.txt
+          if bad="$(grep -v '^Payload/' /tmp/ipa-listing.txt | head -n1)" && [ -n "$bad" ]; then
+            echo "entry outside Payload/: $bad"; exit 1
+          fi
+          grep -qx "Payload/$bundle/Info.plist" /tmp/ipa-listing.txt \
+            || { echo "Payload/$bundle/Info.plist not at zip root of Payload"; exit 1; }
+          echo "IPA OK: $(wc -l < /tmp/ipa-listing.txt) entries, $(du -h "$ipa" | cut -f1)"
+
+      - name: Publish release with IPA
+        env:
+          IPA_PATH: ${{ steps.assemble.outputs.ipa_path }}
+          PKG: ${{ steps.assemble.outputs.package }}
+          VER: ${{ steps.assemble.outputs.version }}
+          BUNDLE: ${{ steps.assemble.outputs.bundle }}
+        run: |
+          set -euo pipefail
+          if [ "${{ github.event_name }}" = "push" ]; then SMOKE=yes; else SMOKE=no; fi
+
+          # One-line summary of the resolution for the release notes.
+          SUM="$(python3 - "$WORKDIR/resolution-report.json" <<'EOF'
+          import json, sys
+          r = json.load(open(sys.argv[1]))
+          print("%d resolved, %d virtual, %d warnings, %d unresolved" % (
+              len(r["resolved"]), len(r["virtual"]), len(r["warnings"]), len(r["unresolved"])))
+          EOF
+          )"
+
+          notes="$WORKDIR/release-notes.md"
+          {
+            echo "## Unsigned IPA from \`$PKG $VER\`"
+            echo ""
+            echo "Assembled automatically from \`${PKG}_${VER}\` by the deb2ipa M4 pipeline."
+            echo ""
+            echo "- Root deb: \`$DEB_URL\`"
+            echo "- App bundle: \`$BUNDLE\`"
+            echo "- Dependencies: $SUM"
+            echo "- Full report: \`resolution-report.json\`, full log: \`build.log\`"
+            echo ""
+            echo "### Sideload"
+            echo ""
+            echo "This IPA is **unsigned by design**. Sideload it with AltStore,"
+            echo "Sideloadly, or any tool that signs with your own Apple ID."
+            echo "No TrollStore requirement, no signing certificates involved."
+          } > "$notes"
+
+          if [ "$SMOKE" = "yes" ]; then
+            tag="smoke-${{ github.run_number }}"
+            # Keep only the newest smoke draft; older ones never went public.
+            gh release list --json tag,isDraft --jq '.[] | select(.isDraft and (.tag | startswith("smoke-"))) | .tag' \
+              | while IFS= read -r old; do
+                  [ "$old" = "$tag" ] || gh release delete "$old" --cleanup-tag --yes || true
+                done
+            gh release create "$tag" \
+              --draft \
+              --title "Smoke IPA build (run ${{ github.run_number }})" \
+              --notes-file "$notes" \
+              "$IPA_PATH" "$WORKDIR/resolution-report.json" "$WORKDIR/build.log"
+            echo "smoke draft release created: $tag"
+          else
+            tag="$(printf 'ipa-%s-%s' "$PKG" "$VER" | sed 's/[^A-Za-z0-9._-]/-/g')"
+            if gh release view "$tag" >/dev/null 2>&1; then
+              echo "release $tag already exists; uploading new assets"
+              gh release upload "$tag" "$IPA_PATH" "$WORKDIR/resolution-report.json" "$WORKDIR/build.log" --clobber
+            else
+              gh release create "$tag" \
+                --title "$PKG $VER - unsigned IPA" \
+                --notes-file "$notes" \
+                "$IPA_PATH" "$WORKDIR/resolution-report.json" "$WORKDIR/build.log"
+            fi
+            echo "published release: $tag"
+          fi
