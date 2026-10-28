@@ -259,3 +259,22 @@ jobs:
             fi
             echo "published release: $tag"
           fi
+
+          # M4 acceptance gate: the release must actually carry the IPA and
+          # the resolution report (gh would have failed on upload errors,
+          # but verify the attachment explicitly - silent loss otherwise).
+          gh release view "$tag" --json assets --jq '.assets[] | "\(.name) \(.size)"' \
+            | tee "$WORKDIR/assets.txt"
+          python3 - "$WORKDIR/assets.txt" "$IPA_PATH" <<'EOF'
+          import os, sys
+          assets = {}
+          for line in open(sys.argv[1]):
+            name, _, size = line.strip().rpartition(" ")
+            if name:
+                assets[name] = int(size)
+          ipa = os.path.basename(sys.argv[2])
+          missing = [f for f in (ipa, "resolution-report.json", "build.log") if f not in assets]
+          assert not missing, "missing release assets: %r (have %r)" % (missing, sorted(assets))
+          assert assets[ipa] > 1024 * 1024, "IPA asset too small: %d bytes" % assets[ipa]
+          print("assets verified: " + ", ".join("%s (%d bytes)" % kv for kv in sorted(assets.items())))
+          EOF
