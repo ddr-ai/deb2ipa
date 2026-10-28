@@ -1,6 +1,6 @@
 # deb2ipa
 
-An iOS app that takes **any mobile arm64 .deb** - jailbreak-repo apps, GitHub-release debs, or any deb containing an arm64 `.app` bundle - reads its metadata, resolves its dependency tree, and builds an **unsigned .ipa that actually runs** via **GitHub Actions** - ready for TrollStore, AltStore, or Sideloadly.
+An iOS app that takes **any mobile arm64 .deb** - jailbreak-repo apps, GitHub-release debs, or any deb containing an arm64 `.app` bundle - reads its metadata, resolves its dependency tree, and builds an **unsigned .ipa that actually runs** via **GitHub Actions** - for you to sideload on your own iPhone with your preferred tool (AltStore, Sideloadly, or any other).
 
     +--------+   parse ar +      +----------------+   workflow_dispatch   +------------------+
 | deb    |   control.tar   | Classification |  ------------------>  | GitHub Actions   |
@@ -14,7 +14,7 @@ An iOS app that takes **any mobile arm64 .deb** - jailbreak-repo apps, GitHub-re
       |                                                                      v
       |                                                            +------------------+
       +----------------------------------------------------------- | download + hand  |
-         TrollStore (apple-magnifier://) / AltStore / share sheet   | off to install   |
+         AltStore / share sheet / your sideloading tool   | off to install   |
                                                                     +------------------+
 
 ## What it does
@@ -22,7 +22,7 @@ An iOS app that takes **any mobile arm64 .deb** - jailbreak-repo apps, GitHub-re
 - **Parses every deb** - even debs that cannot be converted get full metadata, dependency tree, and an explanation of why not.
 - **Classifies** (content-based, source-agnostic): any deb with an arm64 `.app` bundle is convertible, wherever it came from; tweak-only debs, theme packs and Linux debs are not, and the app tells you exactly why.
 - **Resolves dependencies** - the Actions runner fetches Packages indexes from Chariz, Havoc, Procursus, Sileo, BigBoss and any custom repos you add, picks correct versions with real apt version-comparison, and downloads them.
-- **Builds unsigned IPAs** - no developer certificate anywhere in the pipeline: pure dpkg-deb extraction plus zip on a Linux runner. TrollStore installs as-is; AltStore/Sideloadly re-sign at install.
+- **Builds unsigned IPAs** - no developer certificate anywhere in the pipeline: pure dpkg-deb extraction plus zip on a Linux runner. AltStore/Sideloadly re-sign at install time; the same artifact works with any sideloading tool you prefer.
 - **Self-hosting**: a second workflow (tags only) builds deb2ipa itself into an unsigned ipa on a macOS runner, so the app is installed exactly like its own output.
 
 ## Status
