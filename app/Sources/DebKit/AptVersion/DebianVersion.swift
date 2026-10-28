@@ -30,18 +30,23 @@ public struct DebianVersion: Equatable, Sendable, Comparable {
         }
 
         var revision = ""
+        var hadHyphen = false
         if let dash = text.lastIndex(of: "-") {
+            hadHyphen = true
             revision = String(text[text.index(after: dash)...])
             text = text[text.startIndex ..< dash]
         }
 
         let upstream = String(text)
 
-        // Upstream must exist, start with a digit, and contain only
-        // alphanumerics plus . + ~ - ; the revision may not be empty when a
-        // hyphen is present and may not contain another hyphen.
+        // Validation, mirroring dpkg's parse_version:
+        // - the upstream version is required and must start with a digit;
+        // - the revision is required once a hyphen is present;
+        // - allowed characters are alphanumerics plus . + ~ (and hyphens
+        //   inside the upstream portion only, since the last hyphen already
+        //   split off the revision).
         guard !upstream.isEmpty, upstream.first?.isNumber == true else { return nil }
-        guard !revision.isEmpty || !revision.isEmpty else { return nil }
+        guard !hadHyphen || !revision.isEmpty else { return nil }
 
         func allowedCharacters(_ s: String, hyphen: Bool) -> Bool {
             s.allSatisfy { c in
@@ -51,7 +56,6 @@ public struct DebianVersion: Equatable, Sendable, Comparable {
         }
         guard allowedCharacters(upstream, hyphen: true),
               allowedCharacters(revision, hyphen: false) else { return nil }
-        guard !revision.isEmpty || text.contains("-") == false else { return nil }
 
         self.epoch = epoch
         self.upstream = upstream
