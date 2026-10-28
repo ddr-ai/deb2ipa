@@ -5,9 +5,14 @@ import Foundation
 /// This is the single entry point the app uses on-device:
 ///     let package = try DebPackage(debData: data)
 ///     package.control.depends
+///     let verdict = try package.classify()
 public struct DebPackage: Equatable, Sendable {
     /// The parsed control stanza.
     public let control: DebControl
+
+    /// The raw bytes the package was parsed from; kept so `classify()` can
+    /// walk data.tar without the caller holding a second copy.
+    private let rawDebData: Data
 
     /// Parses a deb from raw bytes: ar container, control tar member,
     /// decompression, and the control stanza.
@@ -15,5 +20,11 @@ public struct DebPackage: Equatable, Sendable {
         let archive = try DebArchive(debData: debData)
         let controlData = try ControlExtractor.controlData(from: archive)
         self.control = try DebControlParser.parse(controlData)
+        self.rawDebData = debData
+    }
+
+    /// Classifies the package by its data.tar content (see `DebClassifier`).
+    public func classify() throws -> DebClassification {
+        try DebClassifier.classify(debData: rawDebData)
     }
 }
