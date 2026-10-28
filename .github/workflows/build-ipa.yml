@@ -42,6 +42,12 @@ on:
         description: "Extra .deb URLs to merge in (newline-separated)"
         required: false
         default: ""
+  push:
+    branches: [main]
+    paths:
+      - scripts/resolve_deps.py
+      - scripts/make_ipa.sh
+      - .github/workflows/build-ipa.yml
 
 permissions:
   contents: write
