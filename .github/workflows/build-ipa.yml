@@ -42,12 +42,6 @@ on:
         description: "Extra .deb URLs to merge in (newline-separated)"
         required: false
         default: ""
-  push:
-    branches: [main]
-    paths:
-      - scripts/resolve_deps.py
-      - scripts/make_ipa.sh
-      - .github/workflows/build-ipa.yml
 
 permissions:
   contents: write
@@ -56,9 +50,10 @@ concurrency:
   group: build-ipa-${{ github.ref }}
   cancel-in-progress: true
 
-# NOTE: smoke defaults are inlined in the job env below because the env
-# context cannot be referenced from jobs.<job_id>.env expressions
-# ("Unrecognized named-value: 'env'" - lesson 7.P in SKILL.md).
+env:
+  # Smoke defaults (push runs have no inputs; dispatch inputs win).
+  SMOKE_DEB_URL: "https://repo.chariz.com/debs/ws.hbang.newterm3_3.0~beta1_iphoneos-arm64.deb"
+  DEFAULT_REPOS: '["https://repo.chariz.com/", "https://apt.procurs.us/dists/iphoneos-arm64-rootless/1800/main/binary-iphoneos-arm64/"]'
 
 jobs:
   build:
@@ -66,18 +61,44 @@ jobs:
     runs-on: ubuntu-24.04   # pinned: ubuntu-latest is broken Ubuntu 26 (SKILL.md 7.L)
     timeout-minutes: 30
     env:
+      # Only github-context expressions are legal in job-level env - mapping
+      # dispatch inputs onto smoke defaults happens in the first step, because
+      # the env context is NOT available here (M4 lesson; actionlint catches it).
       WORKDIR: ${{ github.workspace }}/work
-      DEB_URL: ${{ github.event.inputs.deb_url || 'https://repo.chariz.com/debs/ws.hbang.newterm3_3.0~beta1_iphoneos-arm64.deb' }}
-      PACKAGE_NAME: ${{ github.event.inputs.package_name || '' }}
-      VERSION_IN: ${{ github.event.inputs.version || '' }}
-      BUNDLE_ID: ${{ github.event.inputs.bundle_id || '' }}
-      DISPLAY_NAME: ${{ github.event_name == 'push' && 'NewTerm 3' || github.event.inputs.display_name }}
-      REPOS: ${{ github.event.inputs.repos || '["https://repo.chariz.com/", "https://apt.procurs.us/dists/iphoneos-arm64-rootless/1800/main/binary-iphoneos-arm64/"]' }}
-      EXTRA_DEBS: ${{ github.event.inputs.extra_debs || '' }}
       GH_TOKEN: ${{ github.token }}
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Map inputs to environment (dispatch wins, smoke defaults otherwise)
+        env:
+          # Push/smoke runs have no inputs, so every IN_* is empty and the
+          # workflow-level SMOKE_* / DEFAULT_* defaults apply.
+          IN_DEB_URL: ${{ github.event.inputs.deb_url || '' }}
+          IN_REPOS: ${{ github.event.inputs.repos || '' }}
+          IN_PACKAGE_NAME: ${{ github.event.inputs.package_name || '' }}
+          IN_VERSION: ${{ github.event.inputs.version || '' }}
+          IN_BUNDLE_ID: ${{ github.event.inputs.bundle_id || '' }}
+          IN_DISPLAY_NAME: ${{ github.event.inputs.display_name || '' }}
+          IN_EXTRA_DEBS: ${{ github.event.inputs.extra_debs || '' }}
+        run: |
+          set -eu
+          echo "DEB_URL=${IN_DEB_URL:-$SMOKE_DEB_URL}"  >> "$GITHUB_ENV"
+          echo "REPOS=${IN_REPOS:-$DEFAULT_REPOS}"       >> "$GITHUB_ENV"
+          echo "PACKAGE_NAME=$IN_PACKAGE_NAME"          >> "$GITHUB_ENV"
+          echo "VERSION_IN=$IN_VERSION"                 >> "$GITHUB_ENV"
+          echo "BUNDLE_ID=$IN_BUNDLE_ID"                >> "$GITHUB_ENV"
+          echo "DISPLAY_NAME=$IN_DISPLAY_NAME"          >> "$GITHUB_ENV"
+          if [ "${{ github.event_name }}" = "push" ] && [ -z "$IN_DISPLAY_NAME" ]; then
+            echo "DISPLAY_NAME=NewTerm 3"              >> "$GITHUB_ENV"
+          fi
+          if [ -n "$IN_EXTRA_DEBS" ]; then
+            {
+              echo "EXTRA_DEBS<<EOT"
+              printf '%s\n' "$IN_EXTRA_DEBS"
+              echo "EOT"
+            } >> "$GITHUB_ENV"
+          fi
 
       - name: Install assembler dependencies
         run: |
