@@ -106,6 +106,9 @@ jobs:
               printf '%s\n' "$IN_EXTRA_DEBS"
               echo "EOT"
             } >> "$GITHUB_ENV"
+          else
+            # Always define it: downstream steps run with set -u.
+            echo "EXTRA_DEBS=" >> "$GITHUB_ENV"
           fi
 
       - name: Install assembler dependencies
