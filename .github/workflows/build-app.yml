@@ -224,7 +224,12 @@ jobs:
           expected = [ipa, "launchability-report.json", "app-build.log"]
           missing = [f for f in expected if f not in assets]
           assert not missing, "missing release assets: %r (have %r)" % (missing, sorted(assets))
-          assert assets[ipa] > 1024 * 1024, "IPA asset too small: %d bytes" % assets[ipa]
+          # The gate exists to catch silent/empty uploads, not to enforce a
+          # size: deb2ipa's OWN ipa is a thin arm64 binary + plist (~850 KB,
+          # no frameworks bundled), far under the 1 MiB floor that makes
+          # sense for converted debs in build-ipa.yml. 512 KiB catches any
+          # degenerate upload while admitting the real app.
+          assert assets[ipa] > 512 * 1024, "IPA asset too small: %d bytes" % assets[ipa]
           print("assets verified: " + ", ".join("%s (%d bytes)" % kv for kv in sorted(assets.items())))
           EOF
 
