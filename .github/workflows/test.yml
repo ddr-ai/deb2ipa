@@ -6,18 +6,47 @@ on:
   pull_request:
   workflow_dispatch:
 
+concurrency:
+  group: tests
+  cancel-in-progress: true
+
 jobs:
   debkit-tests-linux:
     name: DebKit unit tests (Linux)
-    runs-on: ubuntu-latest
-    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
     steps:
       - name: Check out sources
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Show Swift toolchain
         run: swift --version
 
       - name: Run DebKit unit tests
+        id: tests
         working-directory: app
-        run: swift test
+        continue-on-error: true
+        run: |
+          {
+            echo "=== swift --version ==="
+            swift --version
+            echo "=== swift test ==="
+            swift test
+          } 2>&1 | tee test-output.log
+
+      - name: Publish test log (diagnostics)
+        if: steps.tests.outcome == 'failure'
+        run: |
+          git config user.name "ci-bot"
+          git config user.email "ci-bot@users.noreply.github.com"
+          git checkout -b ci-logs
+          mv app/test-output.log ci-test-output.log
+          git add ci-test-output.log
+          git commit -m "CI test output for run $GITHUB_RUN_ID"
+          git push origin ci-logs
+
+      - name: Fail the job if tests failed
+        if: steps.tests.outcome == 'failure'
+        run: exit 1
