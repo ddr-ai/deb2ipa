@@ -1,12 +1,14 @@
 name: build-ipa
 
-# deb2ipa milestone M4 (see SKILL.md in the repo root).
+# deb2ipa milestones M4+M5 (see SKILL.md in the repo root).
 #
 # Two triggers, one pipeline:
-#   1. workflow_dispatch with a deb URL -> PUBLISHED Release carrying an
-#      unsigned .ipa. The user sideloads it themselves (AltStore,
-#      Sideloadly, or any signer). Unsigned by design; no TrollStore assumed.
-#   2. push to main touching the M4 scripts/workflow -> SMOKE run against
+#   1. workflow_dispatch with a deb URL -> Release carrying an unsigned .ipa.
+#      Published only if the M5 launchability checklist passes; a failing
+#      checklist leaves a DRAFT titled "LAUNCHABILITY FAILED" and a red run.
+#      The user sideloads the IPA themselves (AltStore, Sideloadly, or any
+#      signer). Unsigned by design; no TrollStore assumed.
+#   2. push to main touching the build scripts/workflow -> SMOKE run against
 #      a fixed default deb (NewTerm 3 from Chariz) producing a DRAFT release
 #      tagged smoke-<run number>, so the public release list stays clean.
 #      (No PAT is needed for this path; GITHUB_TOKEN cannot start runs, but
@@ -49,6 +51,8 @@ on:
     paths:
       - scripts/resolve_deps.py
       - scripts/make_ipa.sh
+      - scripts/check_launchability.py
+      - scripts/macho.py
       - .github/workflows/build-ipa.yml
 
 permissions:
@@ -152,14 +156,20 @@ jobs:
           set -euo pipefail
           PKG="$(dpkg-deb -f "$WORKDIR/debs/main.deb" Package)"
           VER="$(dpkg-deb -f "$WORKDIR/debs/main.deb" Version)"
+          # Human-readable name for a generated Info.plist: control Name
+          # field, overridable via the display_name input / smoke default.
+          HUMAN="$(dpkg-deb -f "$WORKDIR/debs/main.deb" Name 2>/dev/null || true)"
           [ -n "$PACKAGE_NAME" ] && PKG="$PACKAGE_NAME"
           [ -n "$VERSION_IN" ] && VER="$VERSION_IN"
+          [ -n "$DISPLAY_NAME" ] && HUMAN="$DISPLAY_NAME"
           bash scripts/make_ipa.sh \
             --debs-dir "$WORKDIR/debs" \
             --workdir "$WORKDIR" \
             --bundle-id "$BUNDLE_ID" \
             --display-name "$DISPLAY_NAME" \
             --version "${VER:-1.0}" \
+            --package-name "$PKG" \
+            --name "$HUMAN" \
             | tee "$WORKDIR/build.log"
           # make_ipa's stdout carries machine lines; parse them from the log
           # (pipefail above has already failed the step if it exited non-zero).
@@ -196,12 +206,35 @@ jobs:
             || { echo "Payload/$bundle/Info.plist not at zip root of Payload"; exit 1; }
           echo "IPA OK: $(wc -l < /tmp/ipa-listing.txt) entries, $(du -h "$ipa" | cut -f1)"
 
+      - name: Launchability checklist
+        id: checklist
+        run: |
+          # M5 hard launchability gate: 6 structural checks + dylib
+          # resolution analysis of every Mach-O in the bundle. Runs to
+          # completion either way so the report lands in the release as
+          # evidence; the publish step turns `fail` into a blocked release.
+          set -u
+          code=0
+          python3 scripts/check_launchability.py \
+            --ipa "${{ steps.assemble.outputs.ipa_path }}" \
+            --payload-dir "$WORKDIR/ipa/Payload" \
+            --report "$WORKDIR/launchability-report.json" \
+            --resolution-report "$WORKDIR/resolution-report.json" \
+            | tee -a "$WORKDIR/build.log" || code=$?
+          if [ "$code" -eq 0 ]; then
+            echo "result=pass" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=fail (checker exit $code)" >> "$GITHUB_OUTPUT"
+          fi
+          echo "checklist result: $(cat "$GITHUB_OUTPUT" | tail -1)"
+
       - name: Publish release with IPA
         env:
           IPA_PATH: ${{ steps.assemble.outputs.ipa_path }}
           PKG: ${{ steps.assemble.outputs.package }}
           VER: ${{ steps.assemble.outputs.version }}
           BUNDLE: ${{ steps.assemble.outputs.bundle }}
+          RESULT: ${{ steps.checklist.outputs.result }}
         run: |
           set -euo pipefail
           if [ "${{ github.event_name }}" = "push" ]; then SMOKE=yes; else SMOKE=no; fi
@@ -219,12 +252,13 @@ jobs:
           {
             echo "## Unsigned IPA from \`$PKG $VER\`"
             echo ""
-            echo "Assembled automatically from \`${PKG}_${VER}\` by the deb2ipa M4 pipeline."
+            echo "Assembled automatically from \`${PKG}_${VER}\` by the deb2ipa M5 pipeline."
             echo ""
             echo "- Root deb: \`$DEB_URL\`"
             echo "- App bundle: \`$BUNDLE\`"
             echo "- Dependencies: $SUM"
-            echo "- Full report: \`resolution-report.json\`, full log: \`build.log\`"
+            echo "- Launchability checklist: **$RESULT**"
+            echo "- Full report: \`resolution-report.json\`, checklist: \`launchability-report.json\`, full log: \`build.log\`"
             echo ""
             echo "### Sideload"
             echo ""
@@ -242,26 +276,35 @@ jobs:
                 done
             gh release create "$tag" \
               --draft \
-              --title "Smoke IPA build (run ${{ github.run_number }})" \
+              --title "Smoke IPA build (run ${{ github.run_number }}) - checklist $RESULT" \
               --notes-file "$notes" \
-              "$IPA_PATH" "$WORKDIR/resolution-report.json" "$WORKDIR/build.log"
+              "$IPA_PATH" "$WORKDIR/resolution-report.json" "$WORKDIR/launchability-report.json" "$WORKDIR/build.log"
             echo "smoke draft release created: $tag"
           else
             tag="$(printf 'ipa-%s-%s' "$PKG" "$VER" | sed 's/[^A-Za-z0-9._-]/-/g')"
+            if [ "$RESULT" = "pass" ]; then
+              # M5 gate: only a passing checklist releases publicly.
+              draft_args=()
+              title="$PKG $VER - unsigned IPA"
+            else
+              draft_args=(--draft)
+              title="$PKG $VER - LAUNCHABILITY FAILED (unsigned IPA)"
+            fi
             if gh release view "$tag" >/dev/null 2>&1; then
               echo "release $tag already exists; uploading new assets"
-              gh release upload "$tag" "$IPA_PATH" "$WORKDIR/resolution-report.json" "$WORKDIR/build.log" --clobber
+              gh release upload "$tag" "$IPA_PATH" "$WORKDIR/resolution-report.json" "$WORKDIR/launchability-report.json" "$WORKDIR/build.log" --clobber
             else
               gh release create "$tag" \
-                --title "$PKG $VER - unsigned IPA" \
+                "${draft_args[@]}" \
+                --title "$title" \
                 --notes-file "$notes" \
-                "$IPA_PATH" "$WORKDIR/resolution-report.json" "$WORKDIR/build.log"
+                "$IPA_PATH" "$WORKDIR/resolution-report.json" "$WORKDIR/launchability-report.json" "$WORKDIR/build.log"
             fi
-            echo "published release: $tag"
+            echo "release created: $tag"
           fi
 
-          # M4 acceptance gate: the release must actually carry the IPA and
-          # the resolution report (gh would have failed on upload errors,
+          # M4/M5 acceptance gate: the release must actually carry the IPA,
+          # both reports and the log (gh would have failed on upload errors,
           # but verify the attachment explicitly - silent loss otherwise).
           gh release view "$tag" --json assets --jq '.assets[] | "\(.name) \(.size)"' \
             | tee "$WORKDIR/assets.txt"
@@ -273,8 +316,18 @@ jobs:
             if name:
                 assets[name] = int(size)
           ipa = os.path.basename(sys.argv[2])
-          missing = [f for f in (ipa, "resolution-report.json", "build.log") if f not in assets]
+          expected = [ipa, "resolution-report.json", "launchability-report.json", "build.log"]
+          missing = [f for f in expected if f not in assets]
           assert not missing, "missing release assets: %r (have %r)" % (missing, sorted(assets))
           assert assets[ipa] > 1024 * 1024, "IPA asset too small: %d bytes" % assets[ipa]
           print("assets verified: " + ", ".join("%s (%d bytes)" % kv for kv in sorted(assets.items())))
           EOF
+
+          # M5 hard gate: a failing checklist blocks the release - the
+          # draft (with IPA + reports attached for inspection) exists, but
+          # the run goes red and nothing is ever published.
+          if [ "$RESULT" != "pass" ]; then
+            echo "::error::launchability checklist failed ($RESULT); release left as draft"
+            exit 1
+          fi
+          echo "launchability checklist passed; release pipeline complete"

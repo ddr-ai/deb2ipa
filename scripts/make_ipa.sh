@@ -26,6 +26,8 @@ BUNDLE_ID=""
 DISPLAY_NAME=""
 VERSION="1.0"
 MIN_IOS="14.0"
+PACKAGE_NAME=""
+HUMAN_NAME=""
 
 usage() {
   sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'
@@ -33,7 +35,8 @@ usage() {
 Usage:
   make_ipa.sh --debs-dir <dir> --workdir <dir> \
               [--bundle-id <id>] [--display-name <name>] \
-              [--version <v>] [--min-ios <v>]
+              [--version <v>] [--min-ios <v>] \
+              [--package-name <id>] [--name <human name>]
 EOF
   exit 2
 }
@@ -46,6 +49,8 @@ while [[ $# -gt 0 ]]; do
     --display-name) DISPLAY_NAME="$2"; shift 2 ;;
     --version)      VERSION="$2";       shift 2 ;;
     --min-ios)      MIN_IOS="$2";      shift 2 ;;
+    --package-name) PACKAGE_NAME="$2"; shift 2 ;;
+    --name)         HUMAN_NAME="$2";   shift 2 ;;
     *) usage ;;
   esac
 done
@@ -140,22 +145,106 @@ else
   log "no bootstrap content to relocate"
 fi
 
+# M5: strip the rootless prefix from symlink targets inside .jbroot/ so the
+# relocated bootstrap is self-contained: /var/jb/usr/bin/cat becomes a
+# relative ../usr/bin/cat that resolves INSIDE the bundle instead of
+# dangling on a stock device. Unmappable targets are left in place - the
+# launchability checklist (check_launchability.py) reports them.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+sr_out="$(python3 - "$DEST" "$SCRIPT_DIR" <<'PYEOF'
+import os, sys
+
+dest, _script_dir = sys.argv[1], sys.argv[2]
+rewritten = dangling = 0
+for root, dirs, files in os.walk(dest, followlinks=False):
+    for name in dirs + files:
+        p = os.path.join(root, name)
+        if not os.path.islink(p):
+            continue
+        target = os.readlink(p)
+        if not target.startswith("/"):
+            continue                        # already relative: leave it alone
+        # Strip known bootstrap prefixes: rootless /var/jb first, then the
+        # classic rootfs / - then re-point inside .jbroot when the target
+        # file was relocated too.
+        for prefix in ("/var/jb/", "/"):
+            if target.startswith(prefix):
+                stripped = target[len(prefix.rstrip("/")):] if prefix != "/" else target
+                candidate = os.path.join(dest, stripped.lstrip("/"))
+                if os.path.exists(candidate):
+                    rel = os.path.relpath(candidate, os.path.dirname(p))
+                    os.unlink(p)
+                    os.symlink(rel, p)
+                    rewritten += 1
+                else:
+                    dangling += 1
+                break
+print("symlink rewrite: %d rewritten, %d left dangling (reported by the checker)" %
+      (rewritten, dangling))
+PYEOF
+)"
+log "$sr_out"
+
+substrate_n="$(find "$IPA_DIR/Payload" -path '*MobileSubstrate*' | wc -l)"
+if [[ "$substrate_n" -gt 0 ]]; then
+  log "WARNING: $substrate_n MobileSubstrate path(s) relocated into the bundle; they cannot function jailed (checker reports details)"
+fi
+
 # ------------------------------------------------------- 5. Info.plist -----
+# M5 generation rules (only when the bundle has no Info.plist of its own):
+#   CFBundleIdentifier  --bundle-id > control Package (sanitized) > fallback
+#   CFBundleExecutable  detected from the bundle (the .app name; validated
+#                       on disk in stage 6)
+#   CFBundleName/       --display-name > control Name > bundle name
+#     CFBundleDisplayName
+#   MinimumOSVersion    --min-ios, but never below what the executable's
+#                       LC_BUILD_VERSION/LC_VERSION_MIN_IPHONEOS declares
 PLIST="$IPA_DIR/Payload/$app_name/Info.plist"
 if [[ ! -f "$PLIST" ]]; then
   log "no Info.plist in bundle; generating a minimal one"
-  python3 - "$PLIST" "$bundle" "$BUNDLE_ID" "$DISPLAY_NAME" "$VERSION" "$MIN_IOS" <<'PYEOF'
-import plistlib, re, sys
+  python3 - "$PLIST" "$bundle" "$BUNDLE_ID" "$DISPLAY_NAME" "$VERSION" \
+              "$MIN_IOS" "$PACKAGE_NAME" "$HUMAN_NAME" \
+              "$IPA_DIR/Payload/$app_name" "$SCRIPT_DIR" <<'PYEOF'
+import os, plistlib, re, sys
 
-path, bundle, bundle_id, display, version, min_ios = sys.argv[1:7]
+sys.path.insert(0, sys.argv[10])
+import macho
 
+(path, bundle, bundle_id, display, version, min_ios,
+ package, human, app_dir) = sys.argv[1:10]
+
+
+def sanitize(s):
+    return re.sub(r"[^A-Za-z0-9.-]+", "-", s or "").strip("-.")
+
+
+# CFBundleIdentifier priority: explicit --bundle-id > control Package >
+# deterministic fallback from the bundle name.
 if not re.fullmatch(r"[A-Za-z0-9.-]+", bundle_id or ""):
-    fallback = re.sub(r"[^A-Za-z0-9.-]+", "-", bundle).strip("-") or "app"
-    bundle_id = "io.github.ddr-ai.deb2ipa." + fallback
+    cand = sanitize(package)
+    if cand and "." in cand:
+        bundle_id = cand
+    else:
+        bundle_id = "io.github.ddr-ai.deb2ipa." + (sanitize(bundle) or "app")
+
+name = display or human or bundle
+
+# MinimumOSVersion: honor --min-ios unless the arm64 slice demands more.
+try:
+    with open(os.path.join(app_dir, bundle), "rb") as f:
+        info = macho.analyze(f.read(1 << 20))
+    declared = info.get("min_ios")
+    if declared:
+        want = [int(x) for x in min_ios.split(".")[:2]]
+        have = [int(x) for x in declared.split(".")[:2]]
+        if have > want:
+            min_ios = declared
+except OSError:
+    pass
 
 plist = {
-    "CFBundleName":            display or bundle,
-    "CFBundleDisplayName":     display or bundle,
+    "CFBundleName":            name,
+    "CFBundleDisplayName":     name,
     "CFBundleIdentifier":      bundle_id,
     "CFBundleInfoDictionaryVersion": "6.0",
     "CFBundlePackageType":     "APPL",
