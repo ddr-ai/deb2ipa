@@ -1,0 +1,12 @@
+# Swift / SPM
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode
+xcuserdata/
+DerivedData/
+
+# Build products
+*.ipa
+.DS_Store
