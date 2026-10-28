@@ -1,0 +1,224 @@
+name: build-app
+
+# deb2ipa milestone M8 (SKILL.md): build the deb2ipa app itself as an
+# unsigned .ipa on a macOS runner and attach it to a GitHub Release, so
+# the app is sideloaded exactly like its own output. Still certificate-
+# free: CODE_SIGNING_ALLOWED=NO, the user's sideload tool signs at
+# install time.
+#
+# Two triggers, one pipeline (the proven M4 pattern):
+#   1. push of a version tag v*  -> public Release from that tag, titled
+#      "deb2ipa <version>". THIS is the release path; tags are created by
+#      the owner (git tag && git push, or the Releases UI).
+#   2. push to main touching app/** or this workflow -> SMOKE build:
+#      a DRAFT release tagged app-smoke-<run number> (older app-smoke
+#      drafts are deleted), so the public release list stays clean. This
+#      is the CI-verifiable path (a connector push can start runs but
+#      cannot create tags) and doubles as the SwiftUI layer's compiler:
+#      ubuntu-24.04 never compiles SwiftUI (SKILL.md 7.S), so a green
+#      smoke run here is the first proof the screens build at all.
+#   3. workflow_dispatch (version input optional) -> smoke build.
+
+on:
+  push:
+    tags:
+      - 'v*'
+    branches: [main]
+    paths:
+      - app/**
+      - .github/workflows/build-app.yml
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "CFBundleShortVersionString override"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+
+concurrency:
+  group: build-app
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Xcodebuild unsigned, assemble ipa, release
+    runs-on: macos-latest
+    timeout-minutes: 40
+    env:
+      WORKDIR: ${{ github.workspace }}/work
+      GH_TOKEN: ${{ github.token }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version + release mode
+        env:
+          IN_VERSION: ${{ github.event.inputs.version || '' }}
+        run: |
+          set -eu
+          mkdir -p "$WORKDIR"
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            echo "MODE=release" >> "$GITHUB_ENV"
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            echo "MODE=smoke" >> "$GITHUB_ENV"
+            echo "VERSION=0.0.0-smoke.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+          fi
+          if [ -n "$IN_VERSION" ]; then
+            echo "VERSION=$IN_VERSION" >> "$GITHUB_ENV"
+          fi
+          echo "mode=$MODE version=$VERSION ref=${GITHUB_REF_NAME}"
+
+      - name: List package schemes (sanity)
+        run: |
+          set -euo pipefail
+          xcodebuild -list 2>&1 | tee "$WORKDIR/xcodebuild-list.txt"
+          grep -q "deb2ipa" "$WORKDIR/xcodebuild-list.txt" \
+            || { echo "::error::the deb2ipa executable scheme is missing - the Apple-only target was not resolved"; exit 1; }
+
+      - name: xcodebuild (unsigned, generic iOS device)
+        run: |
+          set -euo pipefail
+          mkdir -p "$WORKDIR"
+          {
+            echo "=== xcodebuild version ==="
+            xcodebuild -version
+            echo "=== build ==="
+          } | tee "$WORKDIR/app-build.log"
+          xcodebuild \
+            -scheme deb2ipa \
+            -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath "$WORKDIR/dd" \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build 2>&1 | tee -a "$WORKDIR/app-build.log"
+
+      - name: Locate the iOS executable
+        run: |
+          set -euo pipefail
+          EXE="$(find "$WORKDIR/dd/Build/Products" -type f -name deb2ipa | head -n1)"
+          [ -n "$EXE" ] || { echo "::error::no deb2ipa executable under DerivedData"; exit 1; }
+          file "$EXE" | tee -a "$WORKDIR/app-build.log"
+          echo "EXE=$EXE" >> "$GITHUB_ENV"
+
+      - name: Assemble unsigned .ipa (scripts/make_app_ipa.sh)
+        id: assemble
+        run: |
+          set -euo pipefail
+          bash scripts/make_app_ipa.sh \
+            --executable "$EXE" \
+            --workdir "$WORKDIR" \
+            --version "$VERSION" \
+            --build "$GITHUB_RUN_NUMBER" \
+            | tee -a "$WORKDIR/app-build.log"
+          IPA_PATH="$(sed -n 's/^IPA_PATH=//p' "$WORKDIR/app-build.log" | tail -n1)"
+          BUNDLE="$(sed -n 's/^BUNDLE=//p' "$WORKDIR/app-build.log" | tail -n1)"
+          [ -n "$IPA_PATH" ] && [ -n "$BUNDLE" ] \
+            || { echo "no IPA_PATH/BUNDLE in make_app_ipa output"; exit 1; }
+          {
+            echo "ipa_path=$IPA_PATH"
+            echo "bundle=$BUNDLE"
+          } >> "$GITHUB_OUTPUT"
+          {
+            echo "## deb2ipa app build"
+            echo ""
+            echo "- Version: \`$VERSION\` (build $GITHUB_RUN_NUMBER)"
+            echo "- Bundle: \`$BUNDLE\`"
+            echo "- IPA: \`$(basename "$IPA_PATH")\` ($(du -h "$IPA_PATH" | cut -f1))"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Launchability checklist (the app passes its own gate)
+        id: checklist
+        run: |
+          # M5 checklist applied to deb2ipa itself: six checks including
+          # arm64 Mach-O + dylib resolution of every load command.
+          set -u
+          code=0
+          python3 scripts/check_launchability.py \
+            --ipa "${{ steps.assemble.outputs.ipa_path }}" \
+            --payload-dir "$WORKDIR/ipa/Payload" \
+            --report "$WORKDIR/launchability-report.json" \
+            | tee -a "$WORKDIR/app-build.log" || code=$?
+          if [ "$code" -eq 0 ]; then
+            echo "result=pass" >> "$GITHUB_OUTPUT"
+          else
+            echo "result=fail (checker exit $code)" >> "$GITHUB_OUTPUT"
+          fi
+          echo "checklist result: $(cat "$GITHUB_OUTPUT" | tail -n1)"
+
+      - name: Publish release with the unsigned ipa
+        env:
+          IPA_PATH: ${{ steps.assemble.outputs.ipa_path }}
+          RESULT: ${{ steps.checklist.outputs.result }}
+        run: |
+          set -euo pipefail
+          notes="$WORKDIR/release-notes.md"
+          {
+            echo "## deb2ipa $VERSION (unsigned)"
+            echo ""
+            echo "The app itself, built by its own pipeline on macos-latest:"
+            echo "xcodebuild -scheme deb2ipa -destination 'generic/platform=iOS'"
+            echo "CODE_SIGNING_ALLOWED=NO - then hand-assembled into a"
+            echo "Payload-rooted .ipa by scripts/make_app_ipa.sh."
+            echo ""
+            echo "- Launchability checklist: **$RESULT**"
+            echo "- Full report: \`launchability-report.json\`, build log: \`app-build.log\`"
+            echo ""
+            echo "### Sideload"
+            echo ""
+            echo "This IPA is **unsigned by design**. Sideload it with AltStore,"
+            echo "Sideloadly, or any tool that signs with your own Apple ID."
+          } > "$notes"
+
+          if [ "$MODE" = "release" ]; then
+            tag="$GITHUB_REF_NAME"
+            gh release create "$tag" \
+              --title "deb2ipa $VERSION" \
+              --notes-file "$notes" \
+              "$IPA_PATH" "$WORKDIR/launchability-report.json" "$WORKDIR/app-build.log"
+          else
+            tag="app-smoke-${GITHUB_RUN_NUMBER}"
+            # Keep only the newest app-smoke draft; older ones never went public.
+            gh release list --json tagName,isDraft \
+              --jq '.[] | select(.isDraft and (.tagName | startswith("app-smoke-"))) | .tagName' \
+              | while IFS= read -r old; do
+                  [ "$old" = "$tag" ] || gh release delete "$old" --cleanup-tag --yes || true
+                done
+            gh release create "$tag" \
+              --draft \
+              --title "App smoke build (run $GITHUB_RUN_NUMBER) - checklist $RESULT" \
+              --notes-file "$notes" \
+              "$IPA_PATH" "$WORKDIR/launchability-report.json" "$WORKDIR/app-build.log"
+          fi
+          echo "release created: $tag"
+
+          # Acceptance gate: the release must actually carry the IPA and
+          # the reports (silent loss otherwise - M4 lesson).
+          gh release view "$tag" --json assets --jq '.assets[] | "\(.name) \(.size)"' \
+            | tee "$WORKDIR/assets.txt"
+          python3 - "$WORKDIR/assets.txt" "$IPA_PATH" <<'EOF'
+          import os, sys
+          assets = {}
+          for line in open(sys.argv[1]):
+            name, _, size = line.strip().rpartition(" ")
+            if name:
+                assets[name] = int(size)
+          ipa = os.path.basename(sys.argv[2])
+          expected = [ipa, "launchability-report.json", "app-build.log"]
+          missing = [f for f in expected if f not in assets]
+          assert not missing, "missing release assets: %r (have %r)" % (missing, sorted(assets))
+          assert assets[ipa] > 1024 * 1024, "IPA asset too small: %d bytes" % assets[ipa]
+          print("assets verified: " + ", ".join("%s (%d bytes)" % kv for kv in sorted(assets.items())))
+          EOF
+
+          # Same hard gate as build-ipa: a failing checklist blocks the
+          # release; the draft stays as evidence and the run goes red.
+          if [ "$RESULT" != "pass" ]; then
+            echo "::error::launchability checklist failed ($RESULT); release left as draft"
+            exit 1
+          fi
+          echo "app pipeline complete"

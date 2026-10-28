@@ -38,13 +38,20 @@ public struct RootView: View {
                 .tabItem { Label("Settings", systemImage: "wrench") }
                 .tag(Tab.settings)
         }
+        // Attached INSIDE RootView's own body on purpose: a `.task` the
+        // app shell attaches from outside would capture an uninstalled
+        // copy of this view, whose @StateObject fields materialize fresh
+        // throwaway objects - the bootstrap would mutate stores nobody
+        // displays. Inside the body, `self` is the installed value, so
+        // bootstrap() hits the live objects once, when the app appears.
+        .task { await bootstrap() }
     }
 }
 
 public extension RootView {
     /// Kicks the environment awake: validates the token if present and
-    /// loads the releases so every tab starts in the right state. The M8
-    /// app shell calls this from its root view's `.task` modifier.
+    /// loads the releases so every tab starts in the right state. Called
+    /// from RootView's own `.task` (see above) when the app appears.
     func bootstrap() async {
         await environment.validateToken()
         await releasesStore.refresh(environment: environment)
