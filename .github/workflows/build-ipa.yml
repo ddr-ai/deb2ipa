@@ -236,7 +236,7 @@ jobs:
           if [ "$SMOKE" = "yes" ]; then
             tag="smoke-${{ github.run_number }}"
             # Keep only the newest smoke draft; older ones never went public.
-            gh release list --json tag,isDraft --jq '.[] | select(.isDraft and (.tag | startswith("smoke-"))) | .tag' \
+            gh release list --json tagName,isDraft --jq '.[] | select(.isDraft and (.tagName | startswith("smoke-"))) | .tagName' \
               | while IFS= read -r old; do
                   [ "$old" = "$tag" ] || gh release delete "$old" --cleanup-tag --yes || true
                 done
