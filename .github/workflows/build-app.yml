@@ -80,6 +80,9 @@ jobs:
           echo "mode=$mode version=$ver ref=${GITHUB_REF_NAME}"
 
       - name: List package schemes (sanity)
+        # xcodebuild resolves the package from Package.swift - which lives
+        # in app/, not the repo root; everything Xcode-related runs there.
+        working-directory: app
         run: |
           set -euo pipefail
           xcodebuild -list 2>&1 | tee "$WORKDIR/xcodebuild-list.txt"
@@ -87,6 +90,7 @@ jobs:
             || { echo "::error::the deb2ipa executable scheme is missing - the Apple-only target was not resolved"; exit 1; }
 
       - name: xcodebuild (unsigned, generic iOS device)
+        working-directory: app
         run: |
           set -euo pipefail
           mkdir -p "$WORKDIR"
