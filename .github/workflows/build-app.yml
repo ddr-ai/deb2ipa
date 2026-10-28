@@ -59,17 +59,25 @@ jobs:
         run: |
           set -eu
           mkdir -p "$WORKDIR"
+          mode=""
+          ver=""
           if [ "${{ github.ref_type }}" = "tag" ]; then
-            echo "MODE=release" >> "$GITHUB_ENV"
-            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+            mode="release"
+            ver="${GITHUB_REF_NAME#v}"
           else
-            echo "MODE=smoke" >> "$GITHUB_ENV"
-            echo "VERSION=0.0.0-smoke.${GITHUB_RUN_NUMBER}" >> "$GITHUB_ENV"
+            mode="smoke"
+            ver="0.0.0-smoke.${GITHUB_RUN_NUMBER}"
           fi
           if [ -n "$IN_VERSION" ]; then
-            echo "VERSION=$IN_VERSION" >> "$GITHUB_ENV"
+            ver="$IN_VERSION"
           fi
-          echo "mode=$MODE version=$VERSION ref=${GITHUB_REF_NAME}"
+          # GITHUB_ENV values only exist for SUBSEQUENT steps; use the
+          # local variables here (set -u would kill unset reads - 7.O).
+          {
+            echo "MODE=$mode"
+            echo "VERSION=$ver"
+          } >> "$GITHUB_ENV"
+          echo "mode=$mode version=$ver ref=${GITHUB_REF_NAME}"
 
       - name: List package schemes (sanity)
         run: |
