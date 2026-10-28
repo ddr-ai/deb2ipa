@@ -50,10 +50,9 @@ concurrency:
   group: build-ipa-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  # Smoke defaults (push runs have no inputs; dispatch inputs win).
-  SMOKE_DEB_URL: "https://repo.chariz.com/debs/ws.hbang.newterm3_3.0~beta1_iphoneos-arm64.deb"
-  DEFAULT_REPOS: '["https://repo.chariz.com/", "https://apt.procurs.us/dists/iphoneos-arm64-rootless/1800/main/binary-iphoneos-arm64/"]'
+# NOTE: smoke defaults are inlined in the job env below because the env
+# context cannot be referenced from jobs.<job_id>.env expressions
+# ("Unrecognized named-value: 'env'" - lesson 7.P in SKILL.md).
 
 jobs:
   build:
@@ -62,12 +61,12 @@ jobs:
     timeout-minutes: 30
     env:
       WORKDIR: ${{ github.workspace }}/work
-      DEB_URL: ${{ github.event.inputs.deb_url || env.SMOKE_DEB_URL }}
+      DEB_URL: ${{ github.event.inputs.deb_url || 'https://repo.chariz.com/debs/ws.hbang.newterm3_3.0~beta1_iphoneos-arm64.deb' }}
       PACKAGE_NAME: ${{ github.event.inputs.package_name || '' }}
       VERSION_IN: ${{ github.event.inputs.version || '' }}
       BUNDLE_ID: ${{ github.event.inputs.bundle_id || '' }}
       DISPLAY_NAME: ${{ github.event_name == 'push' && 'NewTerm 3' || github.event.inputs.display_name }}
-      REPOS: ${{ github.event.inputs.repos || env.DEFAULT_REPOS }}
+      REPOS: ${{ github.event.inputs.repos || '["https://repo.chariz.com/", "https://apt.procurs.us/dists/iphoneos-arm64-rootless/1800/main/binary-iphoneos-arm64/"]' }}
       EXTRA_DEBS: ${{ github.event.inputs.extra_debs || '' }}
       GH_TOKEN: ${{ github.token }}
 
