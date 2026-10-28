@@ -39,7 +39,12 @@ let package = Package(
         .library(name: "DebKit", targets: ["DebKit"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/tsolomko/SWCompression.git", from: "4.9.0"),
+        // Pinned to 4.8.7: 4.9.0+ raised SWCompression's platform floor to
+        // iOS 17 / macOS 14, above this package's iOS 16 / macOS 13 contract.
+        // The Linux CI cannot enforce iOS platform floors (no such platform
+        // on Linux), so the conflict was only exposed by the M8 macOS build.
+        // 4.9.0/4.9.1 changed no API DebKit uses; the pin keeps the floor.
+        .package(url: "https://github.com/tsolomko/SWCompression.git", exact: "4.8.7"),
     ],
     targets: targets
 )
