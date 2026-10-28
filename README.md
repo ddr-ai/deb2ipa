@@ -31,6 +31,8 @@ Planning complete - see SKILL.md for the governing build plan and milestone brea
 
 **M1 complete:** the on-device parser package (**DebKit**) is implemented - ar reader, control extraction, DebControl parsing, Depends expressions, and a dpkg-exact Debian version comparator. All unit tests (including real dpkg-deb fixtures for xz/gzip) run green in CI on every push.
 
+**M2 complete:** the classifier reads data.tar, sniffs binaries from their magic numbers (thin arm64 Mach-O, fat Mach-O with an arm64 slice, ELF), finds .app bundles anywhere in the payload, and sorts every deb into five content-based classes - app (convertible when an arm64 executable sits in the bundle), tweak, iOS CLI tools, desktop binaries, or data-only - with a human-readable reason list for every verdict. Tested against 8 real dpkg-deb fixtures in CI.
+
 ## Credits
 
 - Precedent for the deb-to-ipa technique: itsnebulalol/deb-to-ipa and sourcelocation/DebToIPA.
