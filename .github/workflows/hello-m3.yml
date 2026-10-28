@@ -1,0 +1,18 @@
+name: hello-m3
+
+# M3 acceptance target: a no-op workflow whose only job is to be dispatched
+# by the app's GitHub client, so dispatch + polling can be verified live.
+# Kept beyond M3 as a cheap "is my PAT working" smoke target.
+
+on:
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  hello:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 2
+    steps:
+      - name: Greet
+        run: echo "hello from deb2ipa (M3 dispatch acceptance)"

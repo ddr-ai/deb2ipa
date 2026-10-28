@@ -28,6 +28,13 @@ jobs:
         id: tests
         working-directory: app
         continue-on-error: true
+        env:
+          # Optional: a fine-grained PAT (this repo only, Contents+Actions
+          # read+write) enables the live hello-m3 dispatch acceptance test
+          # in CI. Without the secret it skips; mock-transport tests still
+          # cover the same paths. GITHUB_TOKEN cannot dispatch (recursion
+          # prevention), so a PAT secret is the only way to run it in CI.
+          DEB2IPA_TOKEN: ${{ secrets.DEB2IPA_TOKEN }}
         run: |
           {
             echo "=== swift --version ==="
