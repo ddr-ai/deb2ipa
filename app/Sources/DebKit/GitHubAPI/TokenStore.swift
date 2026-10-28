@@ -53,7 +53,7 @@ public struct KeychainTokenStore: GitHubTokenStore {
     }
 
     public func save(_ token: String) throws {
-        clear()
+        try clear()
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,

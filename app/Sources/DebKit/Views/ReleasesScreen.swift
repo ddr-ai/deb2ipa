@@ -74,7 +74,7 @@ private struct AssetRow: View {
     var body: some View {
         HStack {
             Image(systemName: isIPA ? "app.badge.fill" : "doc")
-                .foregroundStyle(isIPA ? .accentColor : .secondary)
+                .foregroundStyle(isIPA ? Color.accentColor : Color.secondary)
             VStack(alignment: .leading) {
                 Text(asset.name).font(.callout.monospaced())
                 Text(ByteCountFormatter.string(fromByteCount: asset.size,

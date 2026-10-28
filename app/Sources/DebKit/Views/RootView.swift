@@ -8,7 +8,7 @@ public struct RootView: View {
     @StateObject private var importStore = ImportStore()
     @StateObject private var buildStore = BuildStore()
     @StateObject private var releasesStore = ReleasesStore()
-    @State private var selectedTab: Tab = .import
+    @State private var selectedTab: Tab = .importDeb
 
     public enum Tab: Hashable {
         case importDeb, builds, releases, settings

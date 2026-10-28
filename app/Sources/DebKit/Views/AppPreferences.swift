@@ -43,7 +43,7 @@ public struct AppPreferences: Equatable, Codable, Sendable {
     public var repositoryLooksValid: Bool {
         let parts = repository.split(separator: "/")
         return parts.count == 2
-            && parts.allSatisfy { !$0.isEmpty && $0.allSatisfy { $0.isalnum || $0 == "-" || $0 == "_" || $0 == "." } }
+            && parts.allSatisfy { !$0.isEmpty && $0.allSatisfy { ($0.isLetter || $0.isNumber) || $0 == "-" || $0 == "_" || $0 == "." } }
     }
 
     /// The workflow file with ".github/workflows/" stripped, as the

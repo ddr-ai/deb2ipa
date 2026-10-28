@@ -84,7 +84,7 @@ public enum BinarySniffer {
         var hasArm64 = false
         var arm64SliceIsExecute = false
         // Trust nobody: a corrupted header can claim absurd counts.
-        let archCount = min(nfatArch, 64)
+        let archCount = min(Int(nfatArch), 64)
         for i in 0..<archCount {
             let archBase = 8 + 20 * i
             guard let cputype = be32(data, archBase) else { break }

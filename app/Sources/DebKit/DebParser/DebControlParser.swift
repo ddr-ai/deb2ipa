@@ -106,7 +106,7 @@ public enum DebControlParser {
         var longDescription: String? = nil
         if let description = field("Description") {
             let parts = description.split(separator: "\n", maxSplits: 1,
-                                            omitingEmptySubsequences: false)
+                                            omittingEmptySubsequences: false)
             summary = String(parts[0])
             longDescription = parts.count > 1 ? String(parts[1]) : nil
         }
