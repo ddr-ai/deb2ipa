@@ -43,6 +43,14 @@ on:
         required: false
         default: ""
 
+  # Smoke path: any push to main touching the M4 scripts or this workflow.
+  push:
+    branches: [main]
+    paths:
+      - scripts/resolve_deps.py
+      - scripts/make_ipa.sh
+      - .github/workflows/build-ipa.yml
+
 permissions:
   contents: write
 
