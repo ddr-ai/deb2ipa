@@ -33,6 +33,8 @@ Planning complete - see SKILL.md for the governing build plan and milestone brea
 
 **M2 complete:** the classifier reads data.tar, sniffs binaries from their magic numbers (thin arm64 Mach-O, fat Mach-O with an arm64 slice, ELF), finds .app bundles anywhere in the payload, and sorts every deb into five content-based classes - app (convertible when an arm64 executable sits in the bundle), tweak, iOS CLI tools, desktop binaries, or data-only - with a human-readable reason list for every verdict. Tested against 8 real dpkg-deb fixtures in CI.
 
+**M3 complete:** the GitHub API client is in - Keychain-backed PAT storage (protocol-based, with an in-memory store for tests and Linux CI), workflow dispatch with the automatic once-only retry on 404/422 (workflow not synced yet), run polling with 2-30 s exponential backoff and ETag caching (304 responses are rate-limit free), failure-log and release-asset download, and typed, human-readable errors for every failure mode. The workflow input contract with the M4 build (deb_url, package_name, version, bundle_id, display_name, repos, extra_debs) is fixed and tested. 18 tests replay real GitHub API payloads through a scripted transport, and a live test dispatches a real no-op hello workflow whenever a PAT is available (repo secret DEB2IPA_TOKEN or on-device run; see docs/PAT-SETUP.md).
+
 ## Credits
 
 - Precedent for the deb-to-ipa technique: itsnebulalol/deb-to-ipa and sourcelocation/DebToIPA.
