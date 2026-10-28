@@ -109,6 +109,7 @@ jobs:
             CODE_SIGN_IDENTITY="" \
             build 2>&1 | tee -a "$WORKDIR/app-build.log"
 
+
       - name: Locate the iOS executable
         run: |
           set -euo pipefail
@@ -234,3 +235,24 @@ jobs:
             exit 1
           fi
           echo "app pipeline complete"
+
+      - name: Publish build log (diagnostics)
+        # The job-logs API needs admin scopes (lesson 7.L), so - exactly
+        # like the Tests workflow - a failing run pushes its own log to
+        # the ci-logs branch for diagnosis.
+        if: failure()
+        run: |
+          set -u
+          git config user.name "ci-bot"
+          git config user.email "ci-bot@users.noreply.github.com"
+          git fetch origin ci-logs || true
+          git checkout -b ci-logs origin/ci-logs 2>/dev/null || git checkout -b ci-logs
+          if [ -f "$WORKDIR/app-build.log" ]; then
+            cp "$WORKDIR/app-build.log" "app-build-output-$GITHUB_RUN_NUMBER.log"
+            git add "app-build-output-$GITHUB_RUN_NUMBER.log"
+            git commit -m "CI app-build output for run $GITHUB_RUN_ID"
+            git push origin ci-logs
+          else
+            echo "no app-build.log to publish"
+          fi
+
