@@ -39,7 +39,15 @@ public struct ImportScreen: View {
             }
             .navigationTitle("Import deb")
             .fileImporter(isPresented: $importStore.isFileImporterPresented,
-                          allowedContentTypes: [UTType(filenameExtension: "deb") ?? .data],
+                          // .data, not a deb-specific type: iOS has no
+                          // registered .deb UTI, so UTType(filenameExtension:
+                          // "deb") is a DYNAMIC type the document picker
+                          // cannot match against on-disk file types - deb
+                          // files show up greyed-out and unselectable.
+                          // public.data matches every real file; DebKit's
+                          // ar-magic validation rejects non-debs with the
+                          // typed notADeb message instead.
+                          allowedContentTypes: [.data],
                           allowsMultipleSelection: false) { result in
                 switch result {
                 case .success(let urls):
