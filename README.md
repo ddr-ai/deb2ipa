@@ -27,7 +27,9 @@ An iOS app that takes **any Debian package (.deb)**, reads its metadata, resolve
 
 ## Status
 
-Planning complete - see SKILL.md for the governing build plan and milestone breakdown. Build in progress.
+Planning complete - see SKILL.md for the governing build plan and milestone breakdown.
+
+**M1 complete:** the on-device parser package (**DebKit**) is implemented - ar reader, control extraction, DebControl parsing, Depends expressions, and a dpkg-exact Debian version comparator. All unit tests (including real dpkg-deb fixtures for xz/gzip) run green in CI on every push.
 
 ## Credits
 

@@ -18,30 +18,32 @@ description: Governing build plan for deb2ipa - a SwiftUI iOS app that parses an
 6. Download of the finished unsigned .ipa from the Release, with handoff to TrollStore or AltStore, or the share sheet.
 7. Parses ALL debs even when unconvertible - unconvertible ones get metadata + a clear explanation.
 
-**Target users.** The owner (a jailbreak/TrollStore user) converting legitimately obtained free packages for personal sideloading. Not a distribution or piracy tool; the repo stays private.
+**Target users.** The owner (a jailbreak/TrollStore user) converting legitimately obtained free packages for personal sideloading. Not a distribution or piracy tool. Note: the repository was created public, which conveniently unlocks free unlimited GitHub Actions minutes (Linux and macOS) - flip it to private any time if preferred.
 
 ## 2. Tech stack and platforms (decided - do not relitigate without user request)
 
 - **Primary: Swift 5.9+ / SwiftUI**, deployment target iOS 16.0, Swift Package Manager. Native wins for a single-platform iOS tool: first-class file handling, Swift concurrency for parsing large debs off the main actor, and no bridging overhead. Performance/stability first.
 - **Sole third-party Swift dependency: SWCompression (MIT)** for TAR/XZ/GZip reads. The ar container format is parsed by ~100 lines of in-house Swift. No other dependencies.
-- **Build side: GitHub Actions on ubuntu-latest** + bash + dpkg-deb (preinstalled) + Python 3 (stdlib only) resolver. No macOS runner on the deb-to-ipa path, no Xcode, no signing.
+- **Build side: GitHub Actions on ubuntu-24.04 (pinned; ubuntu-latest resolves to the broken-for-Swift Ubuntu 26 image since Oct 2026 - see 7.L)** + bash + dpkg-deb (preinstalled) + Python 3 (stdlib only) resolver. No macOS runner on the deb-to-ipa path, no Xcode, no signing.
 - **Rejected fallback: Flutter/Dart** - no mature TAR/XZ parsing; only reconsider if Android becomes a target.
 - **Platforms.** App: iOS 16+ (TrollStore device compatibility reaches iOS 14-17.x). Builds: GitHub-hosted Linux runners. Output: unsigned .ipa consumed by TrollStore (direct install) or AltStore/Sideloadly (re-signs at install).
 
 ## 3. Repository layout
 
     deb2ipa/
-      app/
-        Sources/
+      app/                      # Swift package "DebKit" (SPM); the iOS app links it locally
+        Package.swift
+        Sources/DebKit/
           DebParser/            # ar reader, control.tar extraction, DebControl model
-          AptVersion/           # Debian version comparison port (Swift)
-          Classifier/           # app-type vs tweak vs non-iOS detection
-          GitHubAPI/            # PAT store, dispatch, polling, logs, releases
-          Views/                # SwiftUI screens
-        appTests/               # unit tests incl. real deb fixtures
+          AptVersion/           # Debian version comparison port, Depends parsing
+          Classifier/           # app-type vs tweak vs non-iOS detection (M2)
+          GitHubAPI/            # PAT store, dispatch, polling, logs, releases (M3)
+          Views/                # SwiftUI screens (M6)
+        Tests/DebKitTests/      # unit tests with real dpkg-deb fixtures (base64-embedded)
       .github/workflows/
-        build-ipa.yml           # workflow_dispatch: deb -> unsigned ipa (ubuntu-latest)
-        build-app.yml           # builds the deb2ipa app itself as unsigned ipa (macos-latest, tags only)
+        test.yml                # swift test on ubuntu-24.04; failed logs auto-published to ci-logs branch
+        build-ipa.yml           # workflow_dispatch: deb -> unsigned ipa (ubuntu-24.04, M4)
+        build-app.yml           # builds the deb2ipa app itself as unsigned ipa (macos-latest, tags only, M8)
       scripts/
         resolve_deps.py         # dependency resolver + version comparison
         make_ipa.sh             # Payload assembly, Info.plist rules, zip --symlinks
@@ -62,8 +64,8 @@ description: Governing build plan for deb2ipa - a SwiftUI iOS app that parses an
 
 ## 5. Phased build plan (milestones - build in order)
 
-- **M0 - Scaffold.** README, SKILL.md, .gitignore, directory layout, empty workflow skeletons. Done: when this commit lands.
-- **M1 - Deb parser (Swift).** ArReader (global header !<arch>, member size fields, note the 60-char name / 10-byte size format), ControlExtractor supporting control.tar.xz/.gz/plain via SWCompression, DebControl model, Depends parsing (comma groups, pipe alternatives, version operators << <= = >= >>), Debian version comparison port. Acceptance: unit tests parse a real Chariz deb and pass a version-comparison table (epoch, upstream, debian revision, tilde-sorts-before-everything).
+- **M0 - Scaffold. [DONE]** README, SKILL.md, .gitignore, repository layout.
+- **M1 - Deb parser (Swift). [DONE - CI green]** ArReader (global magic, 60-byte member headers, even-byte padding, BSD extended names), ControlExtractor (control.tar.xz/.gz/none via SWCompression), DebControl + DebControlParser (RFC 822 folding, case-insensitive fields), Depends parsing (comma groups, pipe alternatives, version operators, arch qualifiers), DebianVersion (dpkg-exact comparison incl. tilde/epoch/numeric rules). Acceptance met with stronger evidence than planned: unit tests parse REAL debs built by dpkg-deb (xz and gzip fixtures embedded as base64) plus a full version-comparison table; all tests run in CI on ubuntu-24.04.
 - **M2 - Classifier.** List data.tar.* entries; app-type = contains Applications/*.app or var/jb/Applications/*.app; tweak-type = has Library/MobileSubstrate or dylibs but no .app; non-iOS = arch amd64/i386/all with Linux ELF binaries. Acceptance: three fixture debs classified correctly.
 - **M3 - GitHub API client (Swift).** Keychain PAT store; dispatch with retry-once after 5 s on 404/422 (workflow not on default branch yet); run polling with exponential backoff (2->30 s cap) and ETag caching; log fetch on failure; release asset download to Files app. Acceptance: dispatches a hello-world workflow and observes completion from an iOS unit test.
 - **M4 - The build workflow.** .github/workflows/build-ipa.yml: workflow_dispatch with the inputs above, permissions: contents: write, timeout-minutes: 30; steps: apt-get install zip -> download main deb -> scripts/resolve_deps.py (downloads deps) -> make_ipa.sh (assemble + zip) -> verify Payload/ is at archive root -> gh release create with the ipa, report JSON and log. Acceptance: a known free app deb converts into a TrollStore-installable ipa on the first real run.
@@ -74,7 +76,7 @@ description: Governing build plan for deb2ipa - a SwiftUI iOS app that parses an
 
 ## 6. Unsigned IPA strategy (no certificates, ever)
 
-- The deb-to-ipa path runs entirely on ubuntu-latest: dpkg-deb extraction plus zip. No codesigning, no provisioning profiles, no Xcode.
+- The deb-to-ipa path runs entirely on ubuntu-24.04 (pinned): dpkg-deb extraction plus zip. No codesigning, no provisioning profiles, no Xcode.
 - TrollStore installs the unsigned ipa directly (perma-signs via CoreTrust).
 - AltStore/Sideloadly re-sign at install time; the same unsigned artifact serves both paths.
 - The only macOS-runner step is M8 (building the app itself) and it is still signing-free via CODE_SIGNING_ALLOWED=NO.
@@ -92,6 +94,7 @@ description: Governing build plan for deb2ipa - a SwiftUI iOS app that parses an
 - **I. HTTP-only apt repos (e.g. BigBoss)** - only the Linux runner fetches repo indexes; the iOS app exclusively talks to api.github.com over HTTPS and never fetches repo indexes itself.
 - **J. API rate limits** - polling uses exponential backoff with ETag caching; dispatch and polling are the only unauthenticated-adjacent calls (all use the PAT).
 - **K. Pathological dependency trees** - resolver depth cap 25, 200 MB per-package cap, 400 packages max; timeout-minutes: 30 on the job.
+- **L. ubuntu-latest broke CI (hit during M1, Oct 2026)** - the ubuntu-latest label now resolves to the Ubuntu 26 runner image, whose Swift toolchain fails SPM builds within seconds. Every workflow pins runs-on: ubuntu-24.04 (known-good Swift 6.x image). CI self-diagnostics: the Tests workflow tees the swift test output to a file and pushes it to the ci-logs branch when the step fails, because the job-logs API requires admin scopes that the automation does not have.
 
 ## 8. Dependency resolution spec (scripts/resolve_deps.py)
 
