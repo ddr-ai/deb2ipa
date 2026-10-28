@@ -1,1 +1,106 @@
-[object Object]
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: tests
+  cancel-in-progress: true
+
+jobs:
+  debkit-tests-linux:
+    name: DebKit unit tests (Linux)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v5
+
+      - name: Run DebKit unit tests
+        id: tests
+        working-directory: app
+        continue-on-error: true
+        env:
+          # Optional: a fine-grained PAT (this repo only, Contents+Actions
+          # read+write) enables the live hello-m3 dispatch acceptance test
+          # in CI. Without the secret it skips; mock-transport tests still
+          # cover the same paths. GITHUB_TOKEN cannot dispatch (recursion
+          # prevention), so a PAT secret is the only way to run it in CI.
+          DEB2IPA_TOKEN: ${{ secrets.DEB2IPA_TOKEN }}
+        run: |
+          {
+            echo "=== swift --version ==="
+            swift --version
+            echo "=== swift test ==="
+            swift test
+          } 2>&1 | tee test-output.log
+
+      - name: Publish test log (diagnostics)
+        if: steps.tests.outcome == 'failure'
+        run: |
+          git config user.name "ci-bot"
+          git config user.email "ci-bot@users.noreply.github.com"
+          git fetch origin ci-logs || true
+          git checkout -b ci-logs origin/ci-logs 2>/dev/null || git checkout -b ci-logs
+          mv app/test-output.log ci-test-output.log
+          git add ci-test-output.log
+          git commit -m "CI test output for run $GITHUB_RUN_ID"
+          git push origin ci-logs
+
+      - name: Fail the job if tests failed
+        if: steps.tests.outcome == 'failure'
+        run: exit 1
+
+  pipeline-scripts-python:
+    # M7: the workflow-side Python suites finally run in CI. Until now
+    # only `swift test` ran; scripts/test_failure_paths.py (M5) existed
+    # but was never executed by any runner. These suites cover the deb
+    # failure paths, the M7 convertibility pre-check, and the resolver
+    # (unit fixtures + real Packages-index stanzas + a soft live smoke
+    # that skips cleanly if the network is unavailable).
+    name: Pipeline scripts (Python)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    steps:
+      - name: Check out sources
+        uses: actions/checkout@v5
+
+      - name: Run pipeline script suites
+        id: pytests
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          {
+            echo "=== python3 --version ==="
+            python3 --version
+            dpkg-deb --version | head -n1
+            echo "=== scripts/test_failure_paths.py ==="
+            python3 scripts/test_failure_paths.py
+            echo "=== scripts/test_convertibility.py ==="
+            python3 scripts/test_convertibility.py
+            echo "=== scripts/test_resolver.py ==="
+            python3 scripts/test_resolver.py
+          } 2>&1 | tee py-test-output.log
+
+      - name: Publish test log (diagnostics)
+        if: steps.pytests.outcome == 'failure'
+        run: |
+          git config user.name "ci-bot"
+          git config user.email "ci-bot@users.noreply.github.com"
+          git fetch origin ci-logs || true
+          git checkout -b ci-logs origin/ci-logs 2>/dev/null || git checkout -b ci-logs
+          mv py-test-output.log ci-py-test-output.log
+          git add ci-py-test-output.log
+          git commit -m "CI python test output for run $GITHUB_RUN_ID"
+          git push origin ci-logs
+
+      - name: Fail the job if tests failed
+        if: steps.pytests.outcome == 'failure'
+        run: exit 1

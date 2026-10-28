@@ -1,1 +1,59 @@
-[object Object]
+name: hardening
+
+# deb2ipa milestone M7 (SKILL.md line 80): end-to-end scenario coverage
+# for the four classes the mandate names:
+#   app-with-deps      - real NewTerm 3 app deb, dependencies resolved
+#                        from the real Chariz + Procursus indexes.
+#   tweak-rejected     - real QuitAll tweak deb, rejected pre-dispatch by
+#                        the convertibility pre-check (exit 2).
+#   unsatisfiable-dep  - synthetic app deb depending on a package no repo
+#                        ships: resolver exit 3 + UNRESOLVED_DEPENDENCY.
+#   large-deb          - ~60 MB synthetic deb through the draft-release
+#                        asset fallback (constraint 7.C).
+# The two expected-FAILURE scenarios go green only when the failure is
+# the expected, explained one - assertions in hardening_scenario.sh, not
+# bare exit codes.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - scripts/**
+      - .github/workflows/hardening.yml
+  workflow_dispatch:
+
+permissions:
+  contents: write   # the large-deb leg creates/deletes a draft release
+
+concurrency:
+  group: hardening
+  cancel-in-progress: true
+
+jobs:
+  scenarios:
+    name: ${{ matrix.scenario }}
+    runs-on: ubuntu-24.04   # pinned: ubuntu-latest is broken Ubuntu 26 (SKILL.md 7.L)
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        scenario:
+          - app-with-deps
+          - tweak-rejected
+          - unsatisfiable-dep
+          - large-deb
+    env:
+      WORKDIR: ${{ github.workspace }}/work
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install assembler dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq zip unzip xz-utils file
+
+      - name: Run scenario
+        env:
+          SCENARIO: ${{ matrix.scenario }}
+        run: bash scripts/hardening_scenario.sh
