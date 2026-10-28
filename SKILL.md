@@ -96,6 +96,7 @@ description: Governing build plan for deb2ipa - a SwiftUI iOS app that parses an
 - **J. API rate limits** - polling uses exponential backoff with ETag caching; dispatch and polling are the only unauthenticated-adjacent calls (all use the PAT).
 - **K. Pathological dependency trees** - resolver depth cap 25, 200 MB per-package cap, 400 packages max; timeout-minutes: 30 on the job.
 - **L. ubuntu-latest broke CI (hit during M1, Oct 2026)** - the ubuntu-latest label now resolves to the Ubuntu 26 runner image, whose Swift toolchain fails SPM builds within seconds. Every workflow pins runs-on: ubuntu-24.04 (known-good Swift 6.x image). CI self-diagnostics: the Tests workflow tees the swift test output to a file and pushes it to the ci-logs branch when the step fails, because the job-logs API requires admin scopes that the automation does not have.
+- **M. Fat-binary slice offsets exceed any fixed prefix (caught in M2 review, Oct 2026)** - real fat Mach-O files built by lipo/Apple tools place the first slice at 4 KiB or beyond; a sniffer reading only a 68-byte header prefix sees the fat header but cannot reach the slice, and would misclassify genuine legacy rootful app debs as unconvertible. BinarySniffer follows the fat_arch offset anywhere inside the (bounds-checked) file; regression tests cover a slice at offset 4096 and a corrupt offset past EOF. Never assume a fat slice lives near the container header.
 
 ## 8. Dependency resolution spec (scripts/resolve_deps.py)
 

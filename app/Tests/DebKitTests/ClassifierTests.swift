@@ -153,4 +153,55 @@ final class ClassifierTests: XCTestCase {
         XCTAssertEqual(BinarySniffer.sniff(Data("hello, world".utf8)).flavor, .unknown)
         XCTAssertEqual(BinarySniffer.sniff(Data([0xCF, 0xFA])).flavor, .unknown)
     }
+
+    func testSnifferFollowsFatSliceAtRealWorldOffset() {
+        // Real fat binaries (lipo / Apple tools) place the first slice at
+        // 4 KiB or beyond - far past any fixed header prefix. The sniffer
+        // must follow the fat_arch offset into the file (regression test
+        // for SKILL.md lesson 7.M).
+        var fat = Data()
+        func appendBE32(_ value: UInt32) {
+            fat.append(UInt8((value >> 24) & 0xFF))
+            fat.append(UInt8((value >> 16) & 0xFF))
+            fat.append(UInt8((value >> 8) & 0xFF))
+            fat.append(UInt8(value & 0xFF))
+        }
+        appendBE32(0xCAFEBABE) // fat magic
+        appendBE32(1)          // nfat_arch
+        appendBE32(0x0100000C) // cputype arm64
+        appendBE32(0)          // cpusubtype
+        appendBE32(4096)       // offset (real-world alignment)
+        appendBE32(32)         // size
+        appendBE32(14)         // align
+        if fat.count < 4096 {
+            fat.append(Data(repeating: 0, count: 4096 - fat.count))
+        }
+        fat.append(macho64(cputype: 0x0100000C, fileType: 2))
+        let info = BinarySniffer.sniff(fat)
+        XCTAssertEqual(info.flavor, .machOFatArm64)
+        XCTAssertTrue(info.isExecutable)
+    }
+
+    func testSnifferHandlesFatSlicePointingOutsideFile() {
+        // A corrupt or truncated fat header must not crash and must not
+        // report an executable: the fat_arch claims an arm64 slice, but
+        // its bytes lie beyond the end of the file.
+        var fat = Data()
+        func appendBE32(_ value: UInt32) {
+            fat.append(UInt8((value >> 24) & 0xFF))
+            fat.append(UInt8((value >> 16) & 0xFF))
+            fat.append(UInt8((value >> 8) & 0xFF))
+            fat.append(UInt8(value & 0xFF))
+        }
+        appendBE32(0xCAFEBABE)
+        appendBE32(1)
+        appendBE32(0x0100000C)
+        appendBE32(0)
+        appendBE32(100_000) // offset far past EOF
+        appendBE32(32)
+        appendBE32(14)
+        let info = BinarySniffer.sniff(fat)
+        XCTAssertEqual(info.flavor, .machOFatArm64)
+        XCTAssertFalse(info.isExecutable)
+    }
 }
